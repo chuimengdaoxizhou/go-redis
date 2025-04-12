@@ -5,6 +5,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"goredis/config"
 	"goredis/lib/logger"
+	"goredis/resp/handler"
 	"goredis/tcp"
 	"os"
 )
@@ -48,9 +49,11 @@ func main() {
 		&tcp.Config{
 			Address: fmt.Sprintf("%s:%d", config.Properties.Bind, config.Properties.Port),
 		},
-		tcp.MakeHandler(),
+		handler.MakeHandler(),
 	)
 	if err != nil {
 		log.Error(err)
 	}
 }
+
+// *3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n
