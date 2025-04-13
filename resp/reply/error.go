@@ -1,37 +1,40 @@
 package reply
 
+// UnknownErrReply 相关逻辑
+type UnknownErrReply struct{}
 
-// 定义一些常用的错误回复
-type UnkoneErrReply struct {
-}
+var unknownErrBytes = []byte("-Err unknown\r\n")
 
-var unknownErrBytes = []byte("-Err unkonwn\r\n")
-
-func (u UnkoneErrReply) Error() string {
-	return "Err unkonwn"
-}
-func (u UnkoneErrReply) ToBytes() []byte {
+func (r *UnknownErrReply) ToBytes() []byte {
 	return unknownErrBytes
 }
 
+func (r *UnknownErrReply) Error() string {
+	return "Err unknown"
+}
+
+// ArgNumErrReply 相关逻辑
 type ArgNumErrReply struct {
 	Cmd string
-
 }
 
-func (a *ArgNumErrReply) Error() string {
-	return "ERR wrong number of arguments for '" + a.Cmd + "' command"
+func (r *ArgNumErrReply) ToBytes() []byte {
+	return []byte("-ERR wrong number of arguments for '" + r.Cmd + "' command\r\n")
 }
 
-func (a *ArgNumErrReply) ToBytes() []byte {
-	return []byte("-ERR wrong number of arguments for '" + a.Cmd + "' command\r\n")
+func (r *ArgNumErrReply) Error() string {
+	return "ERR wrong number of arguments for '" + r.Cmd + "' command"
 }
 
+// MakeArgNumErrReply 详细信息
 func MakeArgNumErrReply(cmd string) *ArgNumErrReply {
-	return &ArgNumErrReply{Cmd: cmd}
+	return &ArgNumErrReply{
+		Cmd: cmd,
+	}
 }
 
-type SyntaxErrReply struct {}
+// SyntaxErrReply 相关逻辑
+type SyntaxErrReply struct{}
 
 var syntaxErrBytes = []byte("-Err syntax error\r\n")
 var theSyntaxErrReply = &SyntaxErrReply{}
@@ -44,21 +47,24 @@ func (r *SyntaxErrReply) ToBytes() []byte {
 	return syntaxErrBytes
 }
 
-func (r *SyntaxErrReply) Error () string {
+func (r *SyntaxErrReply) Error() string {
 	return "Err syntax error"
 }
 
+// WrongTypeErrReply 相关逻辑
 type WrongTypeErrReply struct{}
 
-var wrongTypeErrBytes = []byte("-ERR Operation against a key holding the wrong kind of value\r\n")
+var wrongTypeErrBytes = []byte("-WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
 
 func (r *WrongTypeErrReply) ToBytes() []byte {
 	return wrongTypeErrBytes
 }
+
 func (r *WrongTypeErrReply) Error() string {
 	return "WRONGTYPE Operation against a key holding the wrong kind of value"
 }
 
+// ProtocolErrReply 相关逻辑
 type ProtocolErrReply struct {
 	Msg string
 }

@@ -1,23 +1,24 @@
 package reply
 
-// PongReply redis 固定的一些回复
-type PongReply struct {
+/**
+保存一些固定的reply
+*/
+
+type PongReply struct{}
+
+var pongBytes = []byte("+PONG\r\n")
+
+// ToBytes marshal redis.Reply
+func (r *PongReply) ToBytes() []byte {
+	return pongBytes
 }
 
-var pongbytes = []byte("+PONG\r\n")
-
-func (r PongReply) ToBytes() []byte {
-	return pongbytes
-}
-
-func MakePongReply() *PongReply {
-	return &PongReply{}
-}
-
+// OkReply is +OK
 type OkReply struct{}
 
 var okBytes = []byte("+OK\r\n")
 
+// ToBytes  redis.Reply
 func (r *OkReply) ToBytes() []byte {
 	return okBytes
 }
@@ -28,12 +29,11 @@ func MakeOkReply() *OkReply {
 	return theOkReply
 }
 
-type NullBulkReply struct {
-}
+var nullBulkBytes = []byte("$-1\r\n") // nil，注：不是空
 
-var nullBulkBytes = []byte("$-1\r\n")
+type NullBulkReply struct{}
 
-func (n NullBulkReply) ToBytes() []byte {
+func (r *NullBulkReply) ToBytes() []byte {
 	return nullBulkBytes
 }
 
@@ -41,18 +41,18 @@ func MakeNullBulkReply() *NullBulkReply {
 	return &NullBulkReply{}
 }
 
+var emptyMultiBulkBytes = []byte("*0\r\n") //空数组
+
 type EmptyMultiBulkReply struct{}
 
-var emptyMultiBulkBytes = []byte("*0\r\n")
-
-func (e EmptyMultiBulkReply) ToBytes() []byte {
+func (r *EmptyMultiBulkReply) ToBytes() []byte {
 	return emptyMultiBulkBytes
 }
 
-type NoReply struct{}
+type NoReply struct{} //空回复
 
 var noBytes = []byte("")
 
-func (n NoReply) ToBytes() []byte {
+func (r *NoReply) ToBytes() []byte {
 	return noBytes
 }

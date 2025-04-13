@@ -1,18 +1,22 @@
 package database
 
-import "strings"
+import (
+	"strings"
+)
 
-var cmdTable = make(map[string]*command) // 命令表
+var cmdTable = make(map[string]*command)
 
 type command struct {
-	exector ExecFunc
-	arity   int
+	executor ExecFunc
+	arity    int // 参数数量
 }
 
-func RegisterCommand(name string, exector ExecFunc, arity int) {
-	name = strings.ToLower(name) // 命令转换为小写
+// RegisterCommand
+// arity允许命令参数数量,如果arity < 0 就意味着len()args >= -arity
+func RegisterCommand(name string, executor ExecFunc, arity int) {
+	name = strings.ToLower(name)
 	cmdTable[name] = &command{
-		exector: exector,
-		arity:   arity,
+		executor: executor,
+		arity:    arity,
 	}
 }

@@ -1,3 +1,4 @@
+// Package database is a memory database with redis compatible interface
 package database
 
 import (
@@ -6,57 +7,78 @@ import (
 	"goredis/interface/resp"
 	"goredis/resp/reply"
 	"strings"
+	"time"
 )
 
+// DB stores data and execute user's commands
 type DB struct {
 	index  int
 	data   dict.Dict
 	addAof func(CmdLine)
+
+	// used for checking expiration
+	ttlKeys dict.Dict // key -> expireTime
 }
 
-type ExecFunc func(db *DB, args [][]byte) resp.Reply // 执行函数
+// ExecFunc command执行器的接口
+// 参数不包括cmdline
+type ExecFunc func(db *DB, args [][]byte) resp.Reply
 
 type CmdLine = [][]byte
 
-func MakeDB() *DB {
-	return &DB{
-		data:   dict.MakeSyncDict(),
-		addAof: func(line CmdLine) {},
+// makeDB 创建DB实例
+func makeDB() *DB {
+	db := &DB{
+		data:    dict.MakeSyncDict(),
+		addAof:  func(line CmdLine) {},
+		ttlKeys: dict.MakeSyncDict(),
 	}
+	return db
 }
 
-// 执行用户发送的命令
-func (db *DB) Exec(c resp.Connection, cmdLine CmdLine) resp.Reply {
-	name := strings.ToLower(string(cmdLine[0])) // 命令转换为小写
-	cmd, ok := cmdTable[name]
+// Exec 在一个DB中执行命令
+func (db *DB) Exec(c resp.Connection, cmdLine [][]byte) resp.Reply {
+
+	cmdName := strings.ToLower(string(cmdLine[0]))
+	cmd, ok := cmdTable[cmdName]
 	if !ok {
-		return reply.MakeErrReply("ERR unknown command " + name)
+		return reply.MakeErrReply("ERR unknown command '" + cmdName + "'")
 	}
-	if !availableArgsCount(cmd.arity, cmdLine[1:]) {
-		return reply.MakeArgNumErrReply(name)
+	if !validateArity(cmd.arity, cmdLine) {
+		return reply.MakeArgNumErrReply(cmdName)
 	}
-	fun := cmd.exector
-
-	return fun(db, cmdLine[1:]) // 执行命令 只需要获取参数，不需要获取命令
+	fun := cmd.executor
+	return fun(db, cmdLine[1:])
 }
 
-// availableArgsCount 检查参数个数是否正确
-// SET K V -》 3 对于确定参数个数的命令，arity = 3
-// EXISTS K1 K2 ... -》 -2 对于不确定参数个数的命令，arity = -2
-func availableArgsCount(arity int, args [][]byte) bool {
-	argNum := len(args)
+func validateArity(arity int, cmdArgs [][]byte) bool {
+	argNum := len(cmdArgs)
 	if arity >= 0 {
 		return argNum == arity
 	}
 	return argNum >= -arity
 }
 
+/* ---- 连接数据库 ----- */
+
 func (db *DB) GetEntity(key string) (*database.DataEntity, bool) {
 	raw, ok := db.data.Get(key)
 	if !ok {
 		return nil, false
 	}
+
 	entity, _ := raw.(*database.DataEntity)
+
+	// Check if the key is expired
+	if entity.ExpireTime > 0 {
+		now := time.Now().UnixNano() / 1e6 // current time in milliseconds
+		if entity.ExpireTime <= now {
+			// Key is expired, remove it
+			db.Remove(key)
+			return nil, false
+		}
+	}
+
 	return entity, true
 }
 
@@ -72,16 +94,18 @@ func (db *DB) PutIfAbsent(key string, entity *database.DataEntity) int {
 	return db.data.PutIfAbsent(key, entity)
 }
 
+// Remove 指定的key清除
 func (db *DB) Remove(key string) {
 	db.data.Remove(key)
 }
 
+// Removes 根据key，清除数据库
 func (db *DB) Removes(keys ...string) (deleted int) {
 	deleted = 0
 	for _, key := range keys {
 		_, exists := db.data.Get(key)
-		if !exists {
-			db.Removes(key)
+		if exists {
+			db.Remove(key)
 			deleted++
 		}
 	}

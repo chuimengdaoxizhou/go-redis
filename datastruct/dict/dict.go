@@ -1,20 +1,18 @@
 package dict
 
-// redis的字典实现
+type Consumer func(key string, val interface{}) bool
 
-// Consumer是一个函数类型，接收一个键和一个值作为参数
-//type Consumer func(key string, val interface{}) bool
-
+// Dict Key-Value结构接口
 type Dict interface {
-	Get(key string) (val interface{}, exists bool)        // 获取值
-	Len() int                                             // 返回字典的长度
-	Put(key string, val interface{}) (result int)         // 添加或更新值
-	PutIfAbsent(key string, val interface{}) (result int) // 如果key不存在则添加值
-	PutIfExists(key string, val interface{}) (result int) // 如果key存在则更新值
-	Remove(key string) (result int)                       // 删除key
-	ForEach(consumer Consumer)                            // 遍历字典
-	Keys() []string                                       // 返回所有的key
-	RandomKeys(limit int) []string                        // 随机返回指定数量的key
-	RandomDistinctKeys(limit int) []string                // 随机返回指定数量的key，要求不重复
-	Clear()                                               // 清空字典
+	Get(key string) (val interface{}, exists bool)
+	Len() int
+	Put(key string, val interface{}) (result int) //成功1，失败0，也就是影响的行数
+	PutIfAbsent(key string, val interface{}) (result int)
+	PutIfExists(key string, val interface{}) (result int)
+	Remove(key string) (result int)
+	ForEach(consumer Consumer)
+	Keys() []string
+	RandomKeys(limit int) []string
+	RandomDistinctKeys(limit int) []string
+	Clear()
 }

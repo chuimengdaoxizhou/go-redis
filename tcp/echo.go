@@ -3,7 +3,7 @@ package tcp
 import (
 	"bufio"
 	"context"
-	log "github.com/sirupsen/logrus"
+	"goredis/lib/logger"
 	"goredis/lib/sync/atomic"
 	"goredis/lib/sync/wait"
 	"io"
@@ -12,47 +12,51 @@ import (
 	"time"
 )
 
-type EchoClient struct {
-	Conn    net.Conn
-	Waiting wait.Wait
-}
+/**
+ * 方便后期测试TCP服务的性能
+ */
 
-func (e *EchoClient) Close() error {
-	e.Waiting.WaitWithTimeOut(10 * time.Second)
-	_ = e.Conn.Close()
-	return nil
-}
+import ()
 
 type EchoHandler struct {
 	activeConn sync.Map
 	closing    atomic.Boolean
 }
 
-func MakeHandler() *EchoHandler {
-	return &EchoHandler{}
+type EchoClient struct {
+	Conn    net.Conn
+	Waiting wait.Wait //多实现一个超时功能
 }
 
-func (handler *EchoHandler) Handle(ctx context.Context, conn net.Conn) {
-	if handler.closing.Get() {
+func (c *EchoClient) Close() error {
+	c.Waiting.WaitWithTimeout(10 * time.Second) //等待一段时间，防止任务一直做不完
+	c.Conn.Close()                              //因为这里直接关闭了，就不对err做处理了
+	return nil
+}
+
+func (h *EchoHandler) Handle(ctx context.Context, conn net.Conn) {
+	if h.closing.Get() {
 		_ = conn.Close()
 	}
+
 	client := &EchoClient{
 		Conn: conn,
 	}
-	handler.activeConn.Store(client, struct{}{})
+	h.activeConn.Store(client, struct{}{})
+
 	reader := bufio.NewReader(conn)
 	for {
-		msg, err := reader.ReadString('\n')
+		// 可能会发生clientEOF，client超时，handler提前关闭
+		msg, err := reader.ReadString('\n') //
 		if err != nil {
 			if err == io.EOF {
-				log.Info("Connection close")
-				handler.activeConn.Delete(client)
+				logger.Info("connection close")
+				h.activeConn.Delete(client)
 			} else {
-				log.Warn(err)
+				logger.Warn(err)
 			}
 			return
 		}
-
 		client.Waiting.Add(1)
 		b := []byte(msg)
 		_, _ = conn.Write(b)
@@ -60,12 +64,13 @@ func (handler *EchoHandler) Handle(ctx context.Context, conn net.Conn) {
 	}
 }
 
-func (handler *EchoHandler) Close() error {
-	log.Info("handler shutting down")
-	handler.closing.Set(true)
-	handler.activeConn.Range(func(key, value interface{}) bool {
+// Close 关闭停止echoHandler
+func (h *EchoHandler) Close() error {
+	logger.Info("handler shutting down...")
+	h.closing.Set(true)
+	h.activeConn.Range(func(key interface{}, val interface{}) bool {
 		client := key.(*EchoClient)
-		_ = client.Conn.Close()
+		_ = client.Close()
 		return true
 	})
 	return nil

@@ -1,15 +1,21 @@
 package database
 
-import "goredis/interface/resp"
+import (
+	"goredis/interface/resp"
+)
 
+// CmdLine 是[][]字节的别名，表示命令行
 type CmdLine = [][]byte
 
+// Database redis风格存储接口
 type Database interface {
 	Exec(client resp.Connection, args [][]byte) resp.Reply
+	AfterClientClose(c resp.Connection)
 	Close()
-	AfterClientClose(c resp.Connection) // 关闭连接后执行的操作
 }
 
+// DataEntity 存储绑定到键的数据，包括字符串、列表、哈希、集等
 type DataEntity struct {
-	Data interface{}
+	Data       interface{}
+	ExpireTime int64 // Unix timestamp in milliseconds, 0 means no expiration
 }

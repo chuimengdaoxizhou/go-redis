@@ -16,98 +16,94 @@ func (dict *SyncDict) Get(key string) (val interface{}, exists bool) {
 }
 
 func (dict *SyncDict) Len() int {
-	count := 0
-	dict.m.Range(func(key, value interface{}) bool { // Range将传入的函数应用于每个键值对
-		count++
+	lenth := 0
+	dict.m.Range(func(k, v interface{}) bool {
+		lenth++
 		return true
 	})
-	return count
+	return lenth
 }
 
 func (dict *SyncDict) Put(key string, val interface{}) (result int) {
-	// 先尝试加载，如果不存在则添加
 	_, existed := dict.m.Load(key)
 	dict.m.Store(key, val)
 	if existed {
-		return 0 // 更新的
+		return 0
 	}
-	return 1 // 插入新的
+	return 1
 }
 
 func (dict *SyncDict) PutIfAbsent(key string, val interface{}) (result int) {
-	// 先尝试加载，如果不存在则添加
 	_, existed := dict.m.Load(key)
-	if existed { // 如果存在则不添加
+	if existed {
 		return 0
 	}
 	dict.m.Store(key, val)
-	return 1 // 插入新的
+	return 1
 }
 
 func (dict *SyncDict) PutIfExists(key string, val interface{}) (result int) {
-	// 先尝试加载，如果不存在则添加
 	_, existed := dict.m.Load(key)
-	if !existed { // 如果不存在则不添加
-		return 0
+	if existed {
+		dict.m.Store(key, val)
+		return 1
 	}
-	dict.m.Store(key, val)
-	return 1 // 更新的
+	return 0
 }
 
 func (dict *SyncDict) Remove(key string) (result int) {
-	// 先尝试加载
 	_, existed := dict.m.Load(key)
-	if !existed { // 如果不存在
-		return 0
-	}
 	dict.m.Delete(key)
-	return 1 // 删除的
+	if existed {
+		return 1
+	}
+	return 0
 }
 
-// Consumer是一个函数类型，接收一个键和一个值作为参数
-type Consumer func(key string, val interface{}) bool
+func (dict *SyncDict) Keys() []string {
+	result := make([]string, dict.Len())
+	i := 0
+	dict.m.Range(func(key, value interface{}) bool {
+		result[i] = key.(string)
+		i++
+		return true
+	})
+	return result
+}
 
 func (dict *SyncDict) ForEach(consumer Consumer) {
-	dict.m.Range(func(key, value interface{}) bool { // Range将传入的函数应用于每个键值对
+	dict.m.Range(func(key, value interface{}) bool {
 		consumer(key.(string), value)
 		return true
 	})
 }
 
-func (dict *SyncDict) Keys() []string {
-	keys := make([]string, 0)
-	dict.m.Range(func(key, value interface{}) bool { // Range将传入的函数应用于每个键值对
-		keys = append(keys, key.(string))
-		return true
-	})
-	return keys
-}
-
 func (dict *SyncDict) RandomKeys(limit int) []string {
-	result := make([]string, dict.Len())
+	result := make([]string, limit)
 	for i := 0; i < limit; i++ {
-		dict.m.Range(func(key, value any) bool {
+		dict.m.Range(func(key, value interface{}) bool {
 			result[i] = key.(string)
 			return false
 		})
 	}
 	return result
+
 }
 
 func (dict *SyncDict) RandomDistinctKeys(limit int) []string {
-	result := make([]string, dict.Len())
+	result := make([]string, limit)
 	i := 0
-	dict.m.Range(func(key, value any) bool {
+	dict.m.Range(func(key, value interface{}) bool {
 		result[i] = key.(string)
 		i++
 		if i == limit {
-			return false // 结束遍历
+			return false
 		}
-		return true // 继续遍历
+		return true
 	})
 	return result
 }
 
 func (dict *SyncDict) Clear() {
-	*dict = *MakeSyncDict() // 清空字典 ,实际上是重新创建一个新的字典,旧的字典会被垃圾回收
+	*dict = *MakeSyncDict()
 }

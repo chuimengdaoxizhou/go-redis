@@ -1,10 +1,16 @@
 package handler
 
+/*
+ * A tcp.RespHandler implements redis protocol
+ */
+
 import (
 	"context"
-	log "github.com/sirupsen/logrus"
+	"goredis/cluster"
+	"goredis/config"
 	"goredis/database"
 	databaseface "goredis/interface/database"
+	"goredis/lib/logger"
 	"goredis/lib/sync/atomic"
 	"goredis/resp/connection"
 	"goredis/resp/parser"
@@ -19,77 +25,92 @@ var (
 	unknownErrReplyBytes = []byte("-ERR unknown\r\n")
 )
 
+// RespHandler implements tcp.Handler and serves as a redis handler
 type RespHandler struct {
-	activeConn sync.Map
+	activeConn sync.Map // *client -> placeholder
 	db         databaseface.Database
-	closing    atomic.Boolean
+	closing    atomic.Boolean // refusing new client and new request
 }
 
+// MakeHandler creates a RespHandler instance
 func MakeHandler() *RespHandler {
 	var db databaseface.Database
-	db = database.NewDatabase()
+	if config.Properties.Self != "" &&
+		len(config.Properties.Peers) > 0 {
+		db = cluster.MakeClusterDatabase()
+	} else {
+		db = database.NewStandaloneDatabase()
+	}
+
 	return &RespHandler{
 		db: db,
 	}
 }
 
-func (r *RespHandler) closeClient(client *connection.Connection) {
+func (h *RespHandler) closeClient(client *connection.Connection) {
 	_ = client.Close()
-	r.db.AfterClientClose(client)
-	r.activeConn.Delete(client)
+	h.db.AfterClientClose(client)
+	h.activeConn.Delete(client)
 }
-func (r *RespHandler) Handle(ctx context.Context, conn net.Conn) {
-	if r.closing.Get() {
+
+func (h *RespHandler) Handle(ctx context.Context, conn net.Conn) {
+	if h.closing.Get() {
+		// closing handler refuse new connection
 		_ = conn.Close()
 	}
-	client := connection.NewConn(conn)
-	r.activeConn.Store(client, struct{}{})
-	ch := parser.Parsestream(conn)
 
+	client := connection.NewConn(conn)
+	h.activeConn.Store(client, 1)
+
+	ch := parser.ParseStream(conn)
 	for payload := range ch {
-		if payload.Err != nil { // 错误
-			if payload.Err == io.EOF || payload.Err == io.ErrUnexpectedEOF ||
-				strings.Contains(payload.Err.Error(), "use of closed network connection") { // 客户端关闭
-				r.closeClient(client)
-				log.Info("Connection closed" + client.RemoteAddr().String())
+		if payload.Err != nil {
+			if payload.Err == io.EOF ||
+				payload.Err == io.ErrUnexpectedEOF ||
+				strings.Contains(payload.Err.Error(), "use of closed network connection") {
+				// connection closed
+				h.closeClient(client)
+				logger.Info("connection closed: " + client.RemoteAddr().String())
 				return
 			}
-			// protocal 错误
+			// protocol err
 			errReply := reply.MakeErrReply(payload.Err.Error())
 			err := client.Write(errReply.ToBytes())
 			if err != nil {
-				r.closeClient(client)
-				log.Info("Connection closed" + client.RemoteAddr().String())
+				h.closeClient(client)
+				logger.Info("connection closed: " + client.RemoteAddr().String())
 				return
 			}
 			continue
 		}
-		if payload.Data == nil { // 空数据
+		if payload.Data == nil {
+			logger.Error("empty payload")
 			continue
 		}
-		reply, ok := payload.Data.(*reply.MultiBulkReply)
+		r, ok := payload.Data.(*reply.MultiBulkReply)
 		if !ok {
-			log.Info("require multi bulk reply")
+			logger.Error("require multi bulk reply")
 			continue
 		}
-
-		result := r.db.Exec(client, reply.Args)
+		result := h.db.Exec(client, r.Args)
 		if result != nil {
 			_ = client.Write(result.ToBytes())
 		} else {
-			client.Write(unknownErrReplyBytes)
+			_ = client.Write(unknownErrReplyBytes)
 		}
 	}
 }
 
-func (r *RespHandler) Close() error {
-	log.Info("handler shutting down")
-	r.closing.Set(true)
-	r.activeConn.Range(func(key, value interface{}) bool {
+// Close stops handler
+func (h *RespHandler) Close() error {
+	logger.Info("handler shutting down...")
+	h.closing.Set(true)
+	// TODO: concurrent wait
+	h.activeConn.Range(func(key interface{}, val interface{}) bool {
 		client := key.(*connection.Connection)
 		_ = client.Close()
 		return true
 	})
-	r.db.Close()
+	h.db.Close()
 	return nil
 }

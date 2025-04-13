@@ -2,66 +2,104 @@ package config
 
 import (
 	"bufio"
-	"fmt"
+	"goredis/lib/logger"
+	"io"
 	"os"
+	"reflect"
+	"strconv"
 	"strings"
 )
 
+// ServerProperties defines global config properties
 type ServerProperties struct {
-	Bind           string   `cfg:"bind"`
-	Port           int      `cfg:"port"`
-	AppendOnly     bool     `cfg:"appendOnly"`
-	AppendFilename string   `cfg:"appendFilename"`
-	MaxClients     int      `cfg:"maxclients"`
-	RequirePass    string   `cfg:"requirepass"`
-	Databases      int      `cfg:"databases"`
-	Peers          []string `cfg:"peers"`
-	Self           string   `cfg:"self"`
+	Bind           string `cfg:"bind"`
+	Port           int    `cfg:"port"`
+	AppendOnly     bool   `cfg:"appendOnly"`
+	AppendFilename string `cfg:"appendFilename"`
+	MaxClients     int    `cfg:"maxclients"`
+	RequirePass    string `cfg:"requirepass"`
+	Databases      int    `cfg:"databases"`
+
+	Peers []string `cfg:"peers"`
+	Self  string   `cfg:"self"`
 }
 
+// Properties holds global config properties
 var Properties *ServerProperties
 
-func SetupConfig(configFile string) error {
-	file, err := os.Open(configFile)
-	if err != nil {
-		return fmt.Errorf("failed to open config file: %v", err)
+func init() {
+	// default config
+	Properties = &ServerProperties{
+		Bind:       "127.0.0.1",
+		Port:       6379,
+		AppendOnly: false,
 	}
-	defer file.Close()
+}
 
-	scanner := bufio.NewScanner(file)
-	Properties = &ServerProperties{} // Initialize the Properties struct
+func parse(src io.Reader) *ServerProperties {
+	config := &ServerProperties{}
 
+	// read config file
+	rawMap := make(map[string]string)
+	scanner := bufio.NewScanner(src)
 	for scanner.Scan() {
 		line := scanner.Text()
-		line = strings.TrimSpace(line)
-
-		// 忽略空行和注释行
-		if len(line) == 0 || line[0] == '#' {
+		if len(line) > 0 && line[0] == '#' {
 			continue
 		}
-
-		// 按空格分割键值对
-		parts := strings.Fields(line)
-		if len(parts) < 2 {
-			continue
-		}
-
-		key := parts[0]
-		value := parts[1]
-
-		switch key {
-		case "bind":
-			Properties.Bind = value
-		case "port":
-			fmt.Sscanf(value, "%d", &Properties.Port)
-		default:
-			// 其他字段
+		pivot := strings.IndexAny(line, " ")
+		if pivot > 0 && pivot < len(line)-1 { // separator found
+			key := line[0:pivot]
+			value := strings.Trim(line[pivot+1:], " ")
+			rawMap[strings.ToLower(key)] = value
 		}
 	}
-
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("failed to read config file: %v", err)
+		logger.Fatal(err)
 	}
 
-	return nil
+	// parse format
+	t := reflect.TypeOf(config)
+	v := reflect.ValueOf(config)
+	n := t.Elem().NumField()
+	for i := 0; i < n; i++ {
+		field := t.Elem().Field(i)
+		fieldVal := v.Elem().Field(i)
+		key, ok := field.Tag.Lookup("cfg")
+		if !ok {
+			key = field.Name
+		}
+		value, ok := rawMap[strings.ToLower(key)]
+		if ok {
+			// fill config
+			switch field.Type.Kind() {
+			case reflect.String:
+				fieldVal.SetString(value)
+			case reflect.Int:
+				intValue, err := strconv.ParseInt(value, 10, 64)
+				if err == nil {
+					fieldVal.SetInt(intValue)
+				}
+			case reflect.Bool:
+				boolValue := "yes" == value
+				fieldVal.SetBool(boolValue)
+			case reflect.Slice:
+				if field.Type.Elem().Kind() == reflect.String {
+					slice := strings.Split(value, ",")
+					fieldVal.Set(reflect.ValueOf(slice))
+				}
+			}
+		}
+	}
+	return config
+}
+
+// SetupConfig read config file and store properties into Properties
+func SetupConfig(configFilename string) {
+	file, err := os.Open(configFilename)
+	if err != nil {
+		panic(err)
+	}
+	defer file.Close()
+	Properties = parse(file)
 }

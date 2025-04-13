@@ -2,58 +2,115 @@ package logger
 
 import (
 	"fmt"
-	"github.com/sirupsen/logrus"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"time"
 )
 
-// Settings 用于配置日志的设置
+// Settings stores config for logger
 type Settings struct {
-	Path       string
-	Name       string
-	Ext        string
-	TimeFormat string
+	Path       string `yaml:"path"`
+	Name       string `yaml:"name"`
+	Ext        string `yaml:"ext"`
+	TimeFormat string `yaml:"time-format"`
 }
 
-// Setup 用于设置日志
-func Setup(settings *Settings) error {
-	// 如果目录不存在，尝试创建
-	if err := os.MkdirAll(settings.Path, os.ModePerm); err != nil {
-		return fmt.Errorf("failed to create log directory: %v", err)
-	}
+var (
+	logFile            *os.File
+	defaultPrefix      = ""
+	defaultCallerDepth = 2
+	logger             *log.Logger
+	mu                 sync.Mutex
+	logPrefix          = ""
+	levelFlags         = []string{"DEBUG", "INFO", "WARN", "ERROR", "FATAL"}
+)
 
-	// 获取当前日期
-	currentDate := time.Now().Format(settings.TimeFormat)
-	logFileName := fmt.Sprintf("%s_%s.%s", settings.Name, currentDate, settings.Ext)
-	logFilePath := filepath.Join(settings.Path, logFileName)
+type logLevel int
 
-	// 打开日志文件，追加写入
-	logFile, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
+// log levels
+const (
+	DEBUG logLevel = iota
+	INFO
+	WARNING
+	ERROR
+	FATAL
+)
+
+const flags = log.LstdFlags
+
+func init() {
+	logger = log.New(os.Stdout, defaultPrefix, flags)
+}
+
+// Setup 初始化logger
+func Setup(settings *Settings) {
+	var err error
+	dir := settings.Path
+	fileName := fmt.Sprintf("%s-%s.%s",
+		settings.Name,
+		time.Now().Format(settings.TimeFormat),
+		settings.Ext)
+
+	logFile, err := mustOpen(fileName, dir)
 	if err != nil {
-		return fmt.Errorf("failed to open log file: %v", err)
+		log.Fatalf("logging.Setup err: %s", err)
 	}
 
-	// 创建 Logrus 实例
-	log := logrus.New()
+	mw := io.MultiWriter(os.Stdout, logFile)
+	logger = log.New(mw, defaultPrefix, flags)
+}
 
-	// 设置日志输出为文件
-	log.SetOutput(logFile)
+func setPrefix(level logLevel) {
+	_, file, line, ok := runtime.Caller(defaultCallerDepth)
+	if ok {
+		logPrefix = fmt.Sprintf("[%s][%s:%d] ", levelFlags[level], filepath.Base(file), line)
+	} else {
+		logPrefix = fmt.Sprintf("[%s] ", levelFlags[level])
+	}
 
-	// 设置日志格式，可以选择 JSON 格式或文本格式
-	log.SetFormatter(&logrus.TextFormatter{
-		FullTimestamp:   true,
-		TimestampFormat: settings.TimeFormat, // 使用传入的时间格式
-	})
+	logger.SetPrefix(logPrefix)
+}
 
-	// 设置日志级别
-	log.SetLevel(logrus.InfoLevel)
+// Debug 打印debug级别的logger
+func Debug(v ...interface{}) {
+	mu.Lock()
+	defer mu.Unlock()
+	setPrefix(DEBUG)
+	logger.Println(v...)
+}
 
-	// 让 logrus 使用自定义的 logger
-	logrus.SetOutput(logFile)
+// Info 打印normal logger
+func Info(v ...interface{}) {
+	mu.Lock()
+	defer mu.Unlock()
+	setPrefix(INFO)
+	logger.Println(v...)
+}
 
-	// 可以在程序开始时输出一条日志，表示日志系统已经初始化
-	log.Info("Logging setup complete.")
+// Warn 打印warning logger
+func Warn(v ...interface{}) {
+	mu.Lock()
+	defer mu.Unlock()
+	setPrefix(WARNING)
+	logger.Println(v...)
+}
 
-	return nil
+// Error 打印error logger
+func Error(v ...interface{}) {
+	mu.Lock()
+	defer mu.Unlock()
+	setPrefix(ERROR)
+	logger.Println(v...)
+}
+
+// Fatal 打印错误logger，然后停止程序
+func Fatal(v ...interface{}) {
+	mu.Lock()
+	defer mu.Unlock()
+	setPrefix(FATAL)
+	logger.Fatalln(v...)
 }

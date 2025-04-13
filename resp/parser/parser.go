@@ -3,8 +3,8 @@ package parser
 import (
 	"bufio"
 	"errors"
-	log "github.com/sirupsen/logrus"
 	"goredis/interface/resp"
+	"goredis/lib/logger"
 	"goredis/resp/reply"
 	"io"
 	"runtime/debug"
@@ -12,109 +12,116 @@ import (
 	"strings"
 )
 
-type Paylaod struct {
+//解析为二进制字节流
+
+type Payload struct {
 	Data resp.Reply
 	Err  error
 }
 
-type readStata struct {
-	readingMultiLine  bool
-	expectedArgsCount int
-	msgType           byte
-	args              [][]byte
-	bulkLen           int64
-}
-
-func (r *readStata) finished() bool {
-	return r.expectedArgsCount > 0 && len(r.args) == r.expectedArgsCount
-}
-
-func Parsestream(reader io.Reader) <-chan *Paylaod {
-	ch := make(chan *Paylaod)
-	go parse0(reader, ch)
+// ParseStream  从io中读数据并且加载到Channel
+func ParseStream(reader io.Reader) <-chan *Payload {
+	ch := make(chan *Payload)
+	go parseScore(reader, ch) //协程并发解决解析
 	return ch
 }
 
-func parse0(reader io.Reader, ch chan<- *Paylaod) {
+type readState struct {
+	readingMultiLine  bool //解析器正在解析多行或单行数据
+	expectedArgsCount int  //正在读去的指令应该有几个参数
+	msgType           byte
+	args              [][]byte
+	bulkLen           int64 //字节组的长度
+}
+
+func (s *readState) finished() bool { //记录解析是不是没有完成
+	return s.expectedArgsCount > 0 && len(s.args) == s.expectedArgsCount
+}
+
+func parseScore(reader io.Reader, ch chan<- *Payload) { //解析用户发送的信息
 	defer func() {
 		if err := recover(); err != nil {
-			log.Error(string(debug.Stack()))
+			logger.Error(string(debug.Stack()))
 		}
 	}()
 	bufReader := bufio.NewReader(reader)
-	var state readStata
+	var state readState
 	var err error
 	var msg []byte
 	for {
 		var ioErr bool
 		msg, ioErr, err = readLine(bufReader, &state)
 		if err != nil {
-			if ioErr { // io错误直接退出
-				ch <- &Paylaod{
+			if ioErr { // 遇到io错误要中止
+				ch <- &Payload{
 					Err: err,
 				}
 				close(ch)
 				return
 			}
-			// 不是io错误，继续解析
-			ch <- &Paylaod{
+			// 协议错误的话，重新读取状态
+			ch <- &Payload{
 				Err: err,
 			}
-			state = readStata{}
+			state = readState{}
 			continue
 		}
 
-		if state.readingMultiLine { // 判断是不是解析多行数据
-			if msg[0] == '*' { // *3\r\n
-				err := parseMultiBulkHeader(msg, &state)
+		// 解析line
+		if !state.readingMultiLine {
+			// receive new response
+			if msg[0] == '*' {
+				err = parseMultiBulkHeader(msg, &state)
 				if err != nil {
-					ch <- &Paylaod{
+					ch <- &Payload{
 						Err: errors.New("protocol error: " + string(msg)),
 					}
-					state = readStata{}
+					state = readState{} // 重新设置状态
 					continue
 				}
 				if state.expectedArgsCount == 0 {
-					ch <- &Paylaod{
-						Data: reply.EmptyMultiBulkReply{},
+					ch <- &Payload{
+						Data: &reply.EmptyMultiBulkReply{},
 					}
-					state = readStata{}
+					state = readState{}
 					continue
 				}
-			} else if msg[0] == '$' { // $4\r\nPING\r\n
-				err := parseBulkHeader(msg, &state)
+			} else if msg[0] == '$' { // 空回复
+				err = parseBulkHeader(msg, &state)
 				if err != nil {
-					ch <- &Paylaod{
+					ch <- &Payload{
 						Err: errors.New("protocol error: " + string(msg)),
 					}
-					state = readStata{}
+					state = readState{}
 					continue
 				}
-				if state.bulkLen == -1 {
-					ch <- &Paylaod{
-						Data: reply.EmptyMultiBulkReply{},
+				if state.bulkLen == -1 { // 空 bulk reply
+					ch <- &Payload{
+						Data: &reply.NullBulkReply{},
 					}
-					state = readStata{}
+					state = readState{}
 					continue
 				}
 			} else {
+				// single line reply
 				result, err := parseSingleLineReply(msg)
-				ch <- &Paylaod{
+				ch <- &Payload{
 					Data: result,
 					Err:  err,
 				}
-				state = readStata{}
+				state = readState{}
 				continue
 			}
 		} else {
-			err := readBody(msg, &state)
+			err = readBody(msg, &state)
 			if err != nil {
-				ch <- &Paylaod{
+				ch <- &Payload{
 					Err: errors.New("protocol error: " + string(msg)),
 				}
-				state = readStata{}
+				state = readState{}
 				continue
 			}
+			// 去过发送完成
 			if state.finished() {
 				var result resp.Reply
 				if state.msgType == '*' {
@@ -122,23 +129,21 @@ func parse0(reader io.Reader, ch chan<- *Paylaod) {
 				} else if state.msgType == '$' {
 					result = reply.MakeBulkReply(state.args[0])
 				}
-				ch <- &Paylaod{
+				ch <- &Payload{
 					Data: result,
 					Err:  err,
 				}
-				state = readStata{}
+				state = readState{}
 			}
 		}
-
 	}
 }
 
-func readLine(bufReader *bufio.Reader, state *readStata) ([]byte, bool, error) {
-	// 1.按照 \r\n 切分
-	// 2.之前读到了$数字，严格读取字符个数
+func readLine(bufReader *bufio.Reader, state *readState) ([]byte, bool, error) { //注意这里是\r\n为一行
+	//读取了$，严格按照字符个数
 	var msg []byte
 	var err error
-	if state.bulkLen == 0 { // 1.按照 \r\n 切分
+	if state.bulkLen == 0 { // 读取正常的line
 		msg, err = bufReader.ReadBytes('\n')
 		if err != nil {
 			return nil, true, err
@@ -146,13 +151,15 @@ func readLine(bufReader *bufio.Reader, state *readStata) ([]byte, bool, error) {
 		if len(msg) == 0 || msg[len(msg)-2] != '\r' {
 			return nil, false, errors.New("protocol error: " + string(msg))
 		}
-	} else { // 2.之前读到了$数字，严格读取字符个数
+	} else {
 		msg = make([]byte, state.bulkLen+2)
-		_, err := io.ReadFull(bufReader, msg)
+		_, err = io.ReadFull(bufReader, msg)
 		if err != nil {
 			return nil, true, err
 		}
-		if len(msg) == 0 || msg[len(msg)-2] != '\r' || msg[len(msg)-1] != '\n' {
+		if len(msg) == 0 ||
+			msg[len(msg)-2] != '\r' ||
+			msg[len(msg)-1] != '\n' {
 			return nil, false, errors.New("protocol error: " + string(msg))
 		}
 		state.bulkLen = 0
@@ -160,7 +167,7 @@ func readLine(bufReader *bufio.Reader, state *readStata) ([]byte, bool, error) {
 	return msg, false, nil
 }
 
-func parseMultiBulkHeader(msg []byte, stats *readStata) error {
+func parseMultiBulkHeader(msg []byte, state *readState) error {
 	var err error
 	var expectedLine uint64
 	expectedLine, err = strconv.ParseUint(string(msg[1:len(msg)-2]), 10, 32)
@@ -168,26 +175,26 @@ func parseMultiBulkHeader(msg []byte, stats *readStata) error {
 		return errors.New("protocol error: " + string(msg))
 	}
 	if expectedLine == 0 {
-		stats.expectedArgsCount = 0
+		state.expectedArgsCount = 0
 		return nil
 	} else if expectedLine > 0 {
-		stats.msgType = msg[0]
-		stats.readingMultiLine = true
-		stats.expectedArgsCount = int(expectedLine)
-		stats.args = make([][]byte, 0, expectedLine)
+		state.msgType = msg[0]
+		state.readingMultiLine = true
+		state.expectedArgsCount = int(expectedLine)
+		state.args = make([][]byte, 0, expectedLine)
 		return nil
 	} else {
 		return errors.New("protocol error: " + string(msg))
 	}
 }
 
-func parseBulkHeader(msg []byte, state *readStata) error {
+func parseBulkHeader(msg []byte, state *readState) error {
 	var err error
 	state.bulkLen, err = strconv.ParseInt(string(msg[1:len(msg)-2]), 10, 64)
 	if err != nil {
 		return errors.New("protocol error: " + string(msg))
 	}
-	if state.bulkLen == -1 {
+	if state.bulkLen == -1 { // null bulk
 		return nil
 	} else if state.bulkLen > 0 {
 		state.msgType = msg[0]
@@ -200,15 +207,13 @@ func parseBulkHeader(msg []byte, state *readStata) error {
 	}
 }
 
-// 解析客户端发送给服务端 +OK -err 这种数据内容
-// +OK\r\n -err\r\n :5\r\n
 func parseSingleLineReply(msg []byte) (resp.Reply, error) {
 	str := strings.TrimSuffix(string(msg), "\r\n")
 	var result resp.Reply
 	switch msg[0] {
-	case '+':
+	case '+': // 状态恢复
 		result = reply.MakeStatusReply(str[1:])
-	case '-':
+	case '-': // 错误回复
 		result = reply.MakeErrReply(str[1:])
 	case ':':
 		val, err := strconv.ParseInt(str[1:], 10, 64)
@@ -216,20 +221,26 @@ func parseSingleLineReply(msg []byte) (resp.Reply, error) {
 			return nil, errors.New("protocol error: " + string(msg))
 		}
 		result = reply.MakeIntReply(val)
+	default:
+		// 解析文本协议
+		strs := strings.Split(str, " ")
+		args := make([][]byte, len(strs))
+		for i, s := range strs {
+			args[i] = []byte(s)
+		}
+		result = reply.MakeMultiBulkReply(args)
 	}
 	return result, nil
 }
 
-func readBody(msg []byte, state *readStata) error {
+func readBody(msg []byte, state *readState) error {
 	line := msg[0 : len(msg)-2]
 	var err error
-	// $3
 	if line[0] == '$' {
 		state.bulkLen, err = strconv.ParseInt(string(line[1:]), 10, 64)
 		if err != nil {
 			return errors.New("protocol error: " + string(msg))
 		}
-		// $0\r\n
 		if state.bulkLen <= 0 {
 			state.args = append(state.args, []byte{})
 			state.bulkLen = 0
